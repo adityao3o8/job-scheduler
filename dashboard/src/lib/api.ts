@@ -34,7 +34,7 @@ async function request<T>(path: string, init?: RequestOpts): Promise<T> {
     });
   } catch {
     throw new Error(
-      "Cannot reach the API. Start the stack with `make up` and ensure port 8080 is available."
+      "Cannot reach the API. Check your connection or redeploy the Vercel app."
     );
   }
   if (res.status === 401 && auth) {
