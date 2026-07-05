@@ -1,0 +1,171 @@
+# Distributed Job Scheduler — Cursor Rules
+# Stack: Go 1.22+, PostgreSQL (pgx), Next.js dashboard
+
+## Project Layout
+
+```
+cmd/
+  api/          — HTTP API server entrypoint
+  worker/       — Job worker entrypoint
+  reaper/       — Stale-lease reaper entrypoint
+internal/
+  domain/       — Pure business types & interfaces (Job, Queue, Status enums).
+                  NEVER imports net/http, database/sql, pgx, or any infra package.
+  store/        — PostgreSQL repository implementations (pgxpool).
+  api/          — HTTP handlers, middleware, routes. Depends on domain interfaces only.
+  worker/       — Claim loop, heartbeat, executor. Depends on domain interfaces only.
+pkg/            — Shared utilities (idempotency helpers, retry, shutdown).
+dashboard/      — Next.js App Router frontend.
+migrations/     — SQL migration files (sequential, plain SQL, no ORM).
+```
+
+Enforce the dependency rule: `internal/domain` is a leaf — nothing inside it imports
+from `store`, `api`, `worker`, or any external infra package. Handlers and workers
+receive domain interfaces, never concrete store types.
+
+## Go Conventions
+
+### Repository Pattern (pgx, no ORM)
+
+- Use `jackc/pgx/v5` and `pgxpool.Pool`. No GORM, no sqlc, no ent.
+- Hand-write every SQL query as a constant string or embedded file.
+- Repository structs implement domain interfaces and accept `*pgxpool.Pool` (or
+  `pgx.Tx` for transactional methods).
+
+```go
+type JobRepository struct{ pool *pgxpool.Pool }
+
+func (r *JobRepository) ClaimJobs(ctx context.Context, workerID string, n int) ([]domain.Job, error) {
+    // single atomic statement — see Correctness section
+}
+```
+
+### Config & Logging
+
+- Twelve-factor: all config from environment variables. Use a typed Config struct
+  populated at startup (e.g., `envconfig` or manual `os.Getenv` with validation).
+- Use `log/slog` with `slog.NewJSONHandler(os.Stdout, nil)` as the default logger.
+  Pass `*slog.Logger` explicitly — no global loggers.
+
+### Error Handling
+
+- Always return `error`. Wrap with context: `fmt.Errorf("claimJobs workerID=%s: %w", id, err)`.
+- Never `panic` in request handlers or worker goroutines.
+- Sentinel errors live in `internal/domain/errors.go` (e.g., `ErrJobNotFound`).
+- Use `errors.Is` / `errors.As` for programmatic checks.
+
+### Testing
+
+- Table-driven tests for every exported function that contains logic.
+- Use `testing.T` subtests: `t.Run(tc.name, func(t *testing.T) { ... })`.
+- Repository tests use a real PostgreSQL via testcontainers-go or a shared test DB
+  behind a build tag (`//go:build integration`).
+- No test helpers that swallow errors — always `t.Fatal` or `t.Errorf`.
+
+## Correctness Invariants (NEVER violate)
+
+### 1. Atomic Job Claiming
+
+Claim jobs with ONE atomic SQL statement. Never SELECT then UPDATE in two round trips.
+
+```sql
+UPDATE jobs
+SET    status        = 'running',
+       worker_id     = $1,
+       lease_expires_at = NOW() + $2::interval,
+       started_at    = NOW()
+WHERE  id IN (
+    SELECT id FROM jobs
+    WHERE  status = 'pending'
+      AND  (run_at IS NULL OR run_at <= NOW())
+    ORDER  BY priority DESC, created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT  $3
+)
+RETURNING id, queue, payload, idempotency_key, attempt;
+```
+
+Never deviate from this pattern. `FOR UPDATE SKIP LOCKED` prevents contention.
+
+### 2. Lease-Based Ownership
+
+- Every claim sets `lease_expires_at`.
+- Workers send periodic heartbeats that extend the lease:
+  `UPDATE jobs SET lease_expires_at = NOW() + interval '30s' WHERE id = $1 AND worker_id = $2`.
+- The reaper process marks expired leases as `failed` (or re-queues) so stuck jobs
+  are always recovered.
+
+### 3. Idempotency
+
+- Every job carries an `idempotency_key`.
+- Before performing a side effect, check whether that key has already been committed.
+- Guard pattern:
+
+```go
+err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+    committed, err := tx.Query(ctx,
+        "SELECT 1 FROM idempotency_keys WHERE key = $1 FOR UPDATE", job.IdempotencyKey)
+    if committed {
+        return nil // already executed
+    }
+    // ... perform side effect ...
+    _, err = tx.Exec(ctx,
+        "INSERT INTO idempotency_keys (key, job_id) VALUES ($1, $2)", job.IdempotencyKey, job.ID)
+    return err
+})
+```
+
+### 4. Transactional State Mutations
+
+All money or state transitions happen inside a database transaction (`pgx.Tx`).
+Never mutate job status outside a transaction.
+
+### 5. Graceful Shutdown
+
+Every `cmd/` entrypoint must:
+
+```go
+ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+defer cancel()
+
+// 1. Stop accepting new work (close listener / stop claim loop).
+// 2. Drain in-flight work: wg.Wait() with a deadline context.
+// 3. Release owned leases:
+//    UPDATE jobs SET status = 'pending', worker_id = NULL, lease_expires_at = NULL
+//    WHERE worker_id = $1 AND status = 'running';
+// 4. Close DB pool.
+// 5. os.Exit(0).
+```
+
+Never skip lease release on shutdown.
+
+## SQL & Migrations
+
+- Migrations are plain `.sql` files, applied with `golang-migrate/migrate` or similar.
+- Use `BIGSERIAL` or `UUID` primary keys. Prefer `UUID` for distributed safety.
+- Index: `(status, run_at)` for the claim query; `(worker_id)` for lease release;
+  `(idempotency_key)` unique.
+- Use `TIMESTAMPTZ` for all time columns. Never `TIMESTAMP WITHOUT TIME ZONE`.
+
+## Next.js Dashboard (`dashboard/`)
+
+- App Router, TypeScript strict mode, server components by default.
+- API calls go through Next.js Route Handlers that proxy to the Go API — the browser
+  never calls the Go API directly.
+- Use `swr` or `@tanstack/react-query` for client-side data fetching with polling
+  for real-time job status.
+- Tailwind CSS for styling. No CSS-in-JS.
+- Display job status with clear visual states: pending (gray), running (blue),
+  completed (green), failed (red), dead (black).
+
+## Code Review Checklist (apply to every diff)
+
+1. Domain package has zero infra imports?
+2. Job claim uses a single atomic UPDATE ... FOR UPDATE SKIP LOCKED?
+3. Lease expiry is set on claim and extended on heartbeat?
+4. Side effects guarded by idempotency key inside a transaction?
+5. Graceful shutdown: signal handler → stop claiming → drain WaitGroup → release leases?
+6. Errors wrapped with `%w` and context? No bare `return err`?
+7. New exported function has a table-driven test?
+8. SQL uses `TIMESTAMPTZ`, not `TIMESTAMP`?
+9. No ORM, no global logger, no `panic` in hot paths?
