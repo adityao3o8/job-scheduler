@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: scheduler
+      POSTGRES_PASSWORD: scheduler
+      POSTGRES_DB: scheduler
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scheduler"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  migrate:
+    build: .
+    command: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
+
+  api:
+    build: .
+    command: api
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
+      JWT_SECRET: demo-secret-do-not-use-in-prod
+      DEMO_AUTH: "true"
+      EMBED_REAPER: "false"
+
+  worker-1:
+    build: .
+    command: worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
+      WORKER_NAME: worker-1
+      MAX_CONCURRENCY: "5"
+      POLL_INTERVAL: 2s
+      LEASE_SECONDS: "30"
+      HEARTBEAT_INTERVAL: 10s
+      DRAIN_TIMEOUT: 15s
+
+  worker-2:
+    build: .
+    command: worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
+      WORKER_NAME: worker-2
+      MAX_CONCURRENCY: "5"
+      POLL_INTERVAL: 2s
+      LEASE_SECONDS: "30"
+      HEARTBEAT_INTERVAL: 10s
+      DRAIN_TIMEOUT: 15s
+
+  reaper:
+    build: .
+    command: reaper
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://scheduler:scheduler@postgres:5432/scheduler?sslmode=disable
+      REAPER_INTERVAL: 10s
+      STALE_THRESHOLD: 30s
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8080
+
+volumes:
+  pgdata:
