@@ -313,6 +313,46 @@ The test suite covers 6 critical paths:
 
 ---
 
+## Deploy Dashboard to Vercel
+
+The **Next.js dashboard** is deployed separately from the Go API. Vercel hosts the frontend; the API must run on a host with PostgreSQL (Docker locally, or Railway/Render/Fly for production).
+
+### Live dashboard
+
+**https://job-scheduler-dashboard-six.vercel.app**
+
+GitHub repo is connected — pushes to `main` that touch `dashboard/` trigger automatic redeploys.
+
+### Required environment variable
+
+In the [Vercel project settings](https://vercel.com/adityao3o8s-projects/job-scheduler-dashboard/settings/environment-variables), set:
+
+| Variable | Example | Purpose |
+|----------|---------|---------|
+| `NEXT_PUBLIC_API_URL` | `https://your-api.example.com` | Public URL of the Go API (no trailing slash) |
+
+The dashboard proxies `/api/*` to this URL. Without it, login and data fetching will fail in production.
+
+### Deploy API for production
+
+Run the stack from `docker-compose.yml` on any container host, or deploy the `api` service image with:
+
+- `DATABASE_URL` — managed PostgreSQL connection string
+- `JWT_SECRET` — random secret
+- `DEMO_AUTH=true` — optional, allows any email/password for recruiter demos
+
+Then set `NEXT_PUBLIC_API_URL` on Vercel to that API's HTTPS URL and redeploy.
+
+### Manual CLI deploy
+
+```bash
+cd dashboard
+vercel link --project job-scheduler-dashboard
+vercel deploy --prod
+```
+
+---
+
 ## License
 
 MIT
