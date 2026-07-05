@@ -2,6 +2,7 @@ import { claimsFromRequest, demoAuthEnabled, signToken } from "./auth";
 import { error, json, mapJob, mapQueue, unauthorized } from "./http";
 import { getSql } from "./db";
 import { resolveDemoUser } from "./setup";
+import { runWorkerTickNow, scheduleWorkerTick } from "./worker-scheduler";
 
 type Ctx = { path: string[]; req: Request };
 
@@ -184,11 +185,18 @@ export async function handleApi(req: Request, path: string[]): Promise<Response>
                   NOW(),
                   ${body.cron_expr ?? null}
                 ) RETURNING *`;
+        scheduleWorkerTick();
         return json(mapJob(row as Record<string, unknown>), 201);
       }
     }
 
+    if (method === "GET" && p === "worker/pulse") {
+      const result = await runWorkerTickNow();
+      return json({ ok: true, ...result });
+    }
+
     if (method === "GET" && p === "jobs") {
+      scheduleWorkerTick();
       const url = new URL(req.url);
       const status = url.searchParams.get("status") || "";
       const queueId = url.searchParams.get("queue_id");
@@ -240,6 +248,7 @@ export async function handleApi(req: Request, path: string[]): Promise<Response>
           WHERE j.queue_id = q.id AND j.id = ${jobId} AND p.org_id = ${orgId}
           RETURNING j.*`;
         if (!row) return error("not found", 404);
+        scheduleWorkerTick();
         return json(mapJob(row as Record<string, unknown>));
       }
 

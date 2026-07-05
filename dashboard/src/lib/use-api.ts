@@ -61,6 +61,10 @@ export function useWorkers() {
   return useSWR<WorkerInfo[]>("workers", () => api.listWorkers(), POLL);
 }
 
+export function useWorkerPulse() {
+  return useSWR("worker-pulse", () => api.workerPulse(), POLL);
+}
+
 export function useDLQ() {
   return useSWR<Page<DLQItem>>("dlq", () => api.listDLQ(), POLL);
 }

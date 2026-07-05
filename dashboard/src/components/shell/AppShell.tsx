@@ -4,10 +4,12 @@ import { LeftRail } from "./LeftRail";
 import { TopBar } from "./TopBar";
 import { ConsoleProvider } from "@/components/providers/ConsoleProvider";
 import { CommandPalette } from "@/components/ui/CommandPalette";
+import { WorkerPulse } from "./WorkerPulse";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <ConsoleProvider>
+      <WorkerPulse />
       <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg-void)" }}>
         <LeftRail />
         <div className="flex flex-col flex-1 min-w-0">

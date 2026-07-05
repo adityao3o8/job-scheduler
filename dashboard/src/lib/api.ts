@@ -115,6 +115,7 @@ export const api = {
 
   // Workers
   listWorkers: () => request<WorkerInfo[]>("/workers"),
+  workerPulse: () => request<{ ok: boolean; processed: number; worker: string }>("/worker/pulse"),
 
   // DLQ
   listDLQ: () => request<Page<DLQItem>>("/dlq"),

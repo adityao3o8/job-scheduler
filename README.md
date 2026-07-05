@@ -313,43 +313,47 @@ The test suite covers 6 critical paths:
 
 ---
 
-## Deploy Dashboard to Vercel
+## Deploy to Vercel (full stack)
 
-The **Next.js dashboard** is deployed separately from the Go API. Vercel hosts the frontend; the API must run on a host with PostgreSQL (Docker locally, or Railway/Render/Fly for production).
+Both the **dashboard UI** and **REST API** run on Vercel as Next.js Route Handlers. PostgreSQL is provided by **Neon** (Vercel Marketplace). Job processing uses an on-demand worker that ticks while the console is open (Hobby plan does not support per-minute crons).
 
-### Live dashboard
+### Live app
 
 **https://job-scheduler-dashboard-six.vercel.app**
 
 GitHub repo is connected — pushes to `main` that touch `dashboard/` trigger automatic redeploys.
 
-### Required environment variable
+### One-time setup
 
-In the [Vercel project settings](https://vercel.com/adityao3o8s-projects/job-scheduler-dashboard/settings/environment-variables), set:
+1. Open [Vercel project Storage](https://vercel.com/adityao3o8s-projects/job-scheduler-dashboard/stores) and add **Neon Postgres** (injects `DATABASE_URL`).
+2. Set environment variables in [project settings](https://vercel.com/adityao3o8s-projects/job-scheduler-dashboard/settings/environment-variables):
 
-| Variable | Example | Purpose |
-|----------|---------|---------|
-| `NEXT_PUBLIC_API_URL` | `https://your-api.example.com` | Public URL of the Go API (no trailing slash) |
+| Variable | Purpose |
+|----------|---------|
+| `JWT_SECRET` | Signs login tokens |
+| `CRON_SECRET` | Protects `/api/setup` and optional manual worker tick |
+| `DEMO_AUTH` | `true` — any email/password works for demos |
 
-The dashboard proxies `/api/*` to this URL. Without it, login and data fetching will fail in production.
+3. Initialize the database (once per environment):
 
-### Deploy API for production
+```bash
+curl -X POST https://job-scheduler-dashboard-six.vercel.app/api/setup \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
 
-Run the stack from `docker-compose.yml` on any container host, or deploy the `api` service image with:
+4. Sign in at `/login` with any email and password (`DEMO_AUTH=true`).
 
-- `DATABASE_URL` — managed PostgreSQL connection string
-- `JWT_SECRET` — random secret
-- `DEMO_AUTH=true` — optional, allows any email/password for recruiter demos
+### Local Go stack (optional)
 
-Then set `NEXT_PUBLIC_API_URL` on Vercel to that API's HTTPS URL and redeploy.
+The original Go API, worker, and reaper in `docker-compose.yml` still work for local development with full persistent workers.
 
 ### Manual CLI deploy
 
 ```bash
-cd dashboard
-vercel link --project job-scheduler-dashboard
-vercel deploy --prod
+vercel deploy --prod --project job-scheduler-dashboard
 ```
+
+From the repo root (Vercel root directory is `dashboard/`).
 
 ---
 
